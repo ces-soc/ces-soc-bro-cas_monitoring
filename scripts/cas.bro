@@ -113,7 +113,7 @@ function expire_doc(t: table[string] of table[string] of SessionContext, idx: st
             log$user_agent = t[idx]["cas"]$user_agent;
         }
         Log::write(CAS::LOG, log);
-        # Reporter::info(fmt("EXPIRE: %s", t[idx]));
+        Reporter::info(fmt("CAS EXPIRE: %s", t[idx]));
     }
     return 0 secs;
 }
@@ -286,6 +286,7 @@ function check_logon_complete(c: connection, user_id: string)
     }
 }
 
+# Duo transaction check
 event http_entity_data(c: connection, is_orig: bool, length: count, data: string)
 {
     local str: string;
@@ -325,12 +326,12 @@ event http_entity_data(c: connection, is_orig: bool, length: count, data: string
                 }
                 else
                 {
-                    Reporter::warning(fmt("UserID %s is missing CAS data in state tracking table. We never saw CAS initiation?", user_id));
+                    Reporter::warning(fmt("UserID %s is missing CAS data in state tracking table. We never saw CAS initiation.", user_id));
                 }
             }
             else
             {
-                Reporter::warning(fmt("UserID %s not in state tracking table when processing Duo event. We never saw CAS initiation?", user_id));
+                Reporter::warning(fmt("UserID %s not in state tracking table when processing Duo event. We never saw CAS initiation.", user_id));
             }
         }
         else
@@ -345,6 +346,7 @@ event http_all_headers(c: connection, is_orig: bool, hlist: mime_header_list)
     if(!c$http?$uri)
         return;
 
+    # Return if we don't see our CAS URI signature
     if(cas_login_uri !in c$http$uri)
         return;
 
@@ -395,6 +397,9 @@ event http_all_headers(c: connection, is_orig: bool, hlist: mime_header_list)
                 ["cas"] = session
             );
             check_logon_complete(c, user_id);
+
+            # Since we know we're dealing with CAS payload at this point, redact the POST payload for data sensitivity
+            c$http$post_body = "<redacted>";
         }
 
          # For now, we are disabling the below code has it's proven to be unreliable during
