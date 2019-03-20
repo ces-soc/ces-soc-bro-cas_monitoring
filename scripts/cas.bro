@@ -103,6 +103,7 @@ function expire_doc(t: table[string] of table[string] of SessionContext, idx: st
         log$username = t[idx]["cas"]$username;
         log$service = t[idx]["cas"]$service;
         log$pw_length = |t[idx]["cas"]$password|;
+        # log$password = "<redacted>";
         log$cas_success = T;
         log$duo_enabled = T;
         # log$duo_success = F; # Don't set since we don't know if the Duo challenge was successful or not
@@ -113,6 +114,8 @@ function expire_doc(t: table[string] of table[string] of SessionContext, idx: st
             log$user_agent = t[idx]["cas"]$user_agent;
         }
         Log::write(CAS::LOG, log);
+        # Redact password
+        t[idx]["cas"]$password = "<redacted>";
         Reporter::info(fmt("CAS EXPIRE: %s", t[idx]));
     }
     return 0 secs;
