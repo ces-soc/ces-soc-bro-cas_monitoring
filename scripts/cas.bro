@@ -378,6 +378,10 @@ event http_all_headers(c: connection, is_orig: bool, hlist: mime_header_list)
             
             session$conn = c$uid;
             session$id = c$id;
+            if("username" !in lp_attrs || lp_attrs["username"] == "") {
+                Reporter::warning(fmt("User ID was missing in headers from %s. Incomplete CAS session.", c$id$orig_h));
+                return;
+            }
             session$username = lp_attrs["username"];
 
             if("password" !in lp_attrs)
