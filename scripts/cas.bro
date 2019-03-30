@@ -365,6 +365,10 @@ event http_all_headers(c: connection, is_orig: bool, hlist: mime_header_list)
         {
             # Since we see username, this is a new post
             lp_attrs = cas_parse_post_body(c$http$post_body);
+            if("username" !in lp_attrs || lp_attrs["username"] == "") {
+                Reporter::warning(fmt("User ID was missing in headers from %s. Incomplete CAS session.", c$id$orig_h));
+                return;
+            }
             user_id = fmt("%s-%s", c$id$orig_h, lp_attrs["username"]);
             # print fmt("USER: %s", user_id);
             
@@ -378,10 +382,6 @@ event http_all_headers(c: connection, is_orig: bool, hlist: mime_header_list)
             
             session$conn = c$uid;
             session$id = c$id;
-            if("username" !in lp_attrs || lp_attrs["username"] == "") {
-                Reporter::warning(fmt("User ID was missing in headers from %s. Incomplete CAS session.", c$id$orig_h));
-                return;
-            }
             session$username = lp_attrs["username"];
 
             if("password" !in lp_attrs)
