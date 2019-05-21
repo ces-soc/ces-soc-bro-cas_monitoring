@@ -379,7 +379,7 @@ event http_entity_data(c: connection, is_orig: bool, length: count, data: string
     }
 }
 
-event http_all_headers(c: connection, is_orig: bool, hlist: mime_header_list)
+event http_all_headers(c: connection, is_orig: bool, hlist: mime_header_list) &priority=10
 {
     # Return if no URI is detected
     if(!c$http?$uri)
@@ -447,7 +447,7 @@ event http_all_headers(c: connection, is_orig: bool, hlist: mime_header_list)
     }
 }
 
-event http_all_headers(c: connection, is_orig: bool, hlist: mime_header_list)
+event http_all_headers(c: connection, is_orig: bool, hlist: mime_header_list) &priority=-10
 {
     # Return if no URI is detected
     if(!c$http?$uri)
