@@ -409,8 +409,8 @@ event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
     }
 }
 
-event bro_done()
-{
-    print("bro_done()");
-    print(users);
-}
+#event bro_done()
+#{
+#    print("bro_done()");
+#    print(users);
+#}
