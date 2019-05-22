@@ -273,7 +273,7 @@ event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
     local session: SessionContext;
     local user_id: string;
 
-    if(c$http?$post_body && c$http?$set_cookie_vars)
+    if(c$http?$post_body && !is_orig)
     {
         # CAS initial POST transaction setup
         if(/username/ in c$http$post_body)
@@ -310,7 +310,14 @@ event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
             session$password = lp_attrs["password"];
             session$lv_dist = levenshtein_distance(lp_attrs["username"], lp_attrs["password"]);
 
-            session$set_cookie = join_string_vec(c$http$set_cookie_vars, "-");
+            if(c$http?$set_cookie_vars)
+            {
+                session$set_cookie = join_string_vec(c$http$set_cookie_vars, "-");
+            }
+            else
+            {
+                session$set_cookie = "";
+            }
 
             # Set user agent if available
             session$user_agent = c$http?$user_agent ? c$http$user_agent : "<unknown>";
@@ -341,7 +348,7 @@ event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
     local session: SessionContext;
     local user_id: string;
 
-    if(c$http?$post_body && c$http?$set_cookie_vars) 
+    if(c$http?$post_body && !is_orig) 
     {
         if(/signedDuoResponse/ in c$http$post_body)
         {
@@ -350,7 +357,14 @@ event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
             session$conn = c$uid;
             session$id = c$id;
             session$username = lp_attrs["username"];
-            session$set_cookie = join_string_vec(c$http$set_cookie_vars, "-");
+            if(c$http?$set_cookie_vars)
+            {
+                session$set_cookie = join_string_vec(c$http$set_cookie_vars, "-");
+            }
+            else
+            {
+                session$set_cookie = "";
+            }
             # Set user agent if available
             session$user_agent = c$http?$user_agent ? c$http$user_agent : "<unknown>";
             local service: set[string] = find_all_urls(c$http$uri);
