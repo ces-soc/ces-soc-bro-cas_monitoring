@@ -258,7 +258,7 @@ function check_logon_complete(c: connection, user_id: string)
     }
 }
 
-event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
+event http_message_done(c: connection, is_orig: bool, stat: http_message_stat) &priority=10
 {
     # Return if no URI is detected
     if(!c$http?$uri)
@@ -333,7 +333,7 @@ event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
     }
 }
 
-event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
+event http_message_done(c: connection, is_orig: bool, stat: http_message_stat) &priority=-10
 {
     # Return if no URI is detected
     if(!c$http?$uri)
