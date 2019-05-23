@@ -114,7 +114,7 @@ function expire_doc(t: table[string] of table[string] of SessionContext, idx: st
 }
 
 ## User state tracking table
-global users: table[string] of table[string] of SessionContext &read_expire = session_expiration &expire_func = expire_doc;
+global users: table[string] of table[string] of SessionContext &read_expire = session_expiration &expire_func = expire_doc &synchronized;
 
 function duo_parse_post_body(post_body: string) : table[string] of string
 {
