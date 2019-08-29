@@ -44,7 +44,7 @@ export {
     ## Bool to determine whether passwords are redacted in the log or not
     const redact_password: bool = T &redef;
 
-    const cas_login_uri = /\/[cA][aA][sS]\/[lL][oO][gG][iI][nN]\?/ &redef;
+    const cas_login_uri = /\/cas\/login/i &redef;
 
     ## IP entrypoints for campus CS services
     const cas_infra: set[addr] = {

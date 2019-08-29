@@ -7,4 +7,4 @@ redef CAS::cas_infra = {
 
 redef CAS::redact_password = T;
 
-redef CAS::cas_login_uri = /\/[cA][aA][sS]\/[lL][oO][gG][iI][nN]\?/;
+redef CAS::cas_login_uri = /\/cas\/login/i;
