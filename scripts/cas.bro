@@ -20,7 +20,7 @@ export {
         ## CAS username detected
         username:  string  &log &optional;
         ## CAS password detected
-        password: string  &log &optional;
+        password: string &optional;
         ## CAS service
         service: string &log &optional;
         ## CAS authentication status
@@ -41,78 +41,15 @@ export {
         user_agent: string &log &optional;
     };
 
-    ## Bool to determine whether passwords are redacted in the log or not
-    const redact_password: bool = T &redef;
-
-    const cas_login_uri = /\/cas\/login/i &redef;
-
-    ## IP entrypoints for campus CS services
-    const cas_infra: set[addr] = {
-    } &redef;
-
-    ## Time after which a seen cookie is forgotten.
-    # const session_expiration = 90sec &redef;
-
-    ## Per user session state
-    type SessionContext: record
-    {
-        user_agent: string &optional;  
-        conn: string &optional;       
-        id: conn_id &optional;
-        cookie: set[string] &optional;    
-        set_cookie: string &optional;
-        duo_trans: string_vec &optional;
-        service: string &optional; 
-        username: string &optional;
-        password: string &optional;
-        lv_dist: count &optional;
+    redef record HTTP::Info += {
+        cas_session: CAS::Info &optional;
+        duo_session: CAS::Info &optional;
     };
 
-    # global expire_doc: function(t: table[string] of table[string] of SessionContext, idx: string): interval;
-
-    ## User state tracking table
-    # global users: table[string] of table[string] of SessionContext &read_expire = session_expiration &expire_func = expire_doc &redef;
-
+    const cas_login_uri = /\/cas\/login/i &redef;
 }
 
-event bro_init()
-{
-    # Create the new CAS event logging stream (cas.log)
-    local stream = [$columns=Info, $path="cas"];
-    Log::create_stream(CAS::LOG, stream);
-}
-
-## This function expires documents in the user state tracking table when session_expiration has been reached.
-## This is important for controlling memory consumption and making sure documents are cleaned out if Bro
-## was unable to track the entire session
-#function expire_doc(t: table[string] of table[string] of SessionContext, idx: string): interval
-#{
-#    if("cas" in t[idx] && "duo" !in t[idx] && /CASPRIVACY.*/ in t[idx]["cas"]$set_cookie)
-#    {
-#        # Build the record and write the log
-#        local log: Info = [
-#            $ts = network_time(),
-#            $uid = t[idx]["cas"]$conn,
-#            $id = t[idx]["cas"]$id
-#        ];
-#        log$username = t[idx]["cas"]$username;
-#        log$service = t[idx]["cas"]$service;
-#        log$pw_length = |t[idx]["cas"]$password|;
-#        log$cas_success = T;
-#        log$duo_enabled = T;
-#        # log$duo_success = F; # Don't set since we don't know if the Duo challenge was successful or not
-#        log$duo_timeout = T;
-#        log$lv_dist = t[idx]["cas"]$lv_dist;
-#        log$user_agent = t[idx]["cas"]?$user_agent ? t[idx]["cas"]$user_agent : "<unknown>";
-#        Log::write(CAS::LOG, log);
-#        # Redact password
-#        t[idx]["cas"]$password = "<redacted>";
-#        Reporter::warning(fmt("CAS EXPIRE: %s", t[idx]));
-#    }
-#    return 0 secs;
-#}
-
-
+# Parse the Duo post body payload
 function duo_parse_post_body(post_body: string) : table[string] of string
 {
     local params: string_vec;
@@ -144,7 +81,8 @@ function duo_parse_post_body(post_body: string) : table[string] of string
     return attrs;
 }
 
-function parse_post_body(post_body: string) : table[string] of string
+# Parse the CAS post body
+function cas_parse_post_body(post_body: string) : table[string] of string
 {
     local params: string_vec;
     local attrs: table[string] of string;
@@ -163,7 +101,17 @@ function parse_post_body(post_body: string) : table[string] of string
     return attrs;
 }
 
-function check_cas_logon(c: connection, session: SessionContext)
+function check_set_cookie(v: vector of string, val: string): bool
+{
+    for(idx in v)
+    {
+        if(v[idx] == val) { return T; }
+    }
+    return F;
+}
+
+# Function used to check the CAS login based on session information already collected
+function check_cas_logon(c: connection)
 {
     # Build the record and write the log
     local log: Info = [
@@ -173,34 +121,44 @@ function check_cas_logon(c: connection, session: SessionContext)
     ];
 
     # Set common fields
-    log$username = session$username;
-    log$pw_length = |session$password|;
-    log$service = session?$service ? session$service : "<unknown>";
-    log$lv_dist = session$lv_dist;
-    log$user_agent = session?$user_agent ? session$user_agent : "<unknown>";
-    
-    if(/CASTGC.*/ in session$set_cookie)
-    {
-        # CAS login successful
-        log$cas_success = T;
-        log$duo_enabled = F;
-    }
-    else if(/CASPRIVACY.*/ in session$set_cookie)
-    {
-        # CAS login successful, MFA pending
-        log$cas_success = T;
-        log$duo_enabled = T;
-    }
-    else 
-    {
-        # CAS login failure
-        log$cas_success = F;
-    }
+    # IMPORTANT: note that the password field is not being recorded in the log (make sure it stays that way)
+    log$username = c$http$cas_session$username;
+    log$pw_length = |c$http$cas_session$password|;
+    log$service = c$http$cas_session?$service ? c$http$cas_session$service : "<unknown>";
+    log$lv_dist = c$http$cas_session$lv_dist;
+    log$user_agent = c$http?$user_agent ? c$http$user_agent : "<unknown>";
 
-    Log::write(CAS::LOG, log);
+    if(c$http?$status_code)
+    {
+        if(c$http$status_code == 401)
+        {
+            # CAS login failed
+            log$cas_success = F;
+            Log::write(CAS::LOG, log);
+            return;
+        }
+
+        if(c$http?$set_cookie_vars && check_set_cookie(c$http$set_cookie_vars, "TGC") && c$http$status_code == 302) 
+        {
+            # CAS login successful
+            log$cas_success = T;
+            log$duo_enabled = F;
+            Log::write(CAS::LOG, log);
+            return;
+        }
+
+        if(c$http$status_code == 200) 
+        {
+            # CAS login successful
+            log$cas_success = T;
+            log$duo_enabled = T;
+            Log::write(CAS::LOG, log);
+            return;
+        }
+    }
 }
 
-function check_duo_logon(c: connection, session: SessionContext)
+function check_duo_logon(c: connection)
 {
     # Build the record and write the log
     local log: Info = [
@@ -210,118 +168,40 @@ function check_duo_logon(c: connection, session: SessionContext)
     ];
 
     # Set common fields
-    log$username = session$username;
-    log$service = session?$service ? session$service : "<unknown>";
-    log$user_agent = session?$user_agent ? session$user_agent : "<unknown>";
-    
-    if(/CASTGC.*/ in session$set_cookie)
-    {
-        # DUO login successful
-        log$duo_success = T;
-    }
-    else 
-    {
-        # DUO login failure
-        log$duo_success = F;
-    }
+    log$username = c$http$duo_session$username;
+    log$service = c$http$duo_session?$service ? c$http$duo_session$service : "<unknown>";
+    log$user_agent = c$http?$user_agent ? c$http$user_agent : "<unknown>";
 
-    Log::write(CAS::LOG, log);
+    if(c$http?$status_code)
+    {
+        if(c$http$status_code == 401)
+        {
+            # CAS login failed
+            log$duo_success = F;
+            Log::write(CAS::LOG, log);
+            return;
+        }
+
+        if(c$http?$set_cookie_vars && check_set_cookie(c$http$set_cookie_vars, "TGC") && c$http$status_code == 302) 
+        {
+            # CAS login successful
+            log$duo_success = T;
+            Log::write(CAS::LOG, log);
+            return;
+        }
+
+        if(c$http$status_code == 200) 
+        {
+            # CAS login successful
+            log$duo_success = T;
+            Log::write(CAS::LOG, log);
+            return;
+        }
+    }
 }
 
-#function check_logon_complete(c: connection, user_id: string)
-#{
-#    # Build the record and write the log
-#    local log: Info = [
-#        $ts = network_time(),
-#        $uid = c$uid,
-#        $id = c$id
-#    ];
-#
-#    # TODO: Add condition if duo is detected but the initial CAS transaction was not detected
-#    # In this case, we assume the CAS auth was successful if we detect the DUO auth worked
-#    if(user_id != "")
-#    {
-#        if("cas" in users[user_id])
-#        {
-#            # Set common fields
-#            log$username = users[user_id]["cas"]$username;
-#            log$pw_length = |users[user_id]["cas"]$password|;
-#            log$service = users[user_id]["cas"]?$service ? users[user_id]["cas"]$service : "<unknown>";
-#            log$lv_dist = users[user_id]["cas"]$lv_dist;
-#            log$user_agent = users[user_id]["cas"]?$user_agent ? users[user_id]["cas"]$user_agent : "<unknown>";
-#
-#            if("duo" !in users[user_id] && /CASTGC.*/ in users[user_id]["cas"]$set_cookie)
-#            {
-#                # Since we've detected the immediate setting of the CASTGT cookie, the CAS authentication was successful and
-#                # there is no secondary MFA challenge
-#                # CAS authentication was successful
-#                # print("CAS authentication successful");
-#                log$cas_success = T;
-#                log$duo_enabled = F;
-#            }
-#            else if("duo" !in users[user_id] && /CASPRIVACY.*/ in users[user_id]["cas"]$set_cookie)
-#            {
-#                # When the CASPRIVACY cookie is set, the CAS auth was successful, but since a CASTGT cookie was not set, we assume
-#                # the CAS login was successful and a seconday MFA auth is pending as we wait for CASTGT
-#                # CAS authentication successful, MFA auth is pending
-#                # This has been left here for future processing work if needed
-#                # print("CAS authentication successful, MFA pending");
-#                return;
-#            }
-#            else if("duo" in users[user_id] && (/CASTGC.*/ in users[user_id]["cas"]$set_cookie || /CASTGC.*/ in users[user_id]["duo"]$set_cookie))
-#            {
-#                # We see Duo session context has been set and we have detected the presence of the CASTGT cookie.
-#                # CAS and DUO authentication was successful
-#                # print("CAS and DUO authentication successful");
-#                # Update the log record
-#                log$cas_success = T;
-#                log$duo_enabled = T;
-#                log$duo_success = T;
-#            }
-#            else if("duo" !in users[user_id] && /(CASTGC.*|CASPRIVACY.*)/ !in users[user_id]["cas"]$set_cookie)
-#            {
-#                # CAS login failure was detected
-#                # print("CAS login failure");
-#                log$cas_success = F;
-#            }
-#            else
-#            {
-#                Reporter::warning(fmt("check_logon_complete for %s did not satisfy any condition", user_id));
-#                return;
-#            }
-#
-#            Log::write(CAS::LOG, log);
-#            delete users[user_id];
-#        }
-#        else 
-#        {
-#            # Set common fields
-#            log$username = users[user_id]["duo"]$username;
-#            log$service = users[user_id]["duo"]?$service ? users[user_id]["duo"]$service : "<unknown>";
-#            log$user_agent = users[user_id]["duo"]?$user_agent ? users[user_id]["duo"]$user_agent : "<unknown>";
-#            if("duo" in users[user_id] && /CASTGC.*/ in users[user_id]["duo"]$set_cookie)
-#            {
-#                log$cas_success = T;
-#                log$duo_enabled = T;
-#                log$duo_success = T;
-#                log$cas_assume = T;
-#
-#                Log::write(CAS::LOG, log);
-#                delete users[user_id];
-#            }
-#            else
-#            {
-#                Reporter::warning(fmt("check_logon_complete for %s did not satisfy any condition", user_id));
-#                return;
-#            }
-#
-#        }
-#
-#    }
-#}
-
-# CAS login processing
-event http_message_done(c: connection, is_orig: bool, stat: http_message_stat) &priority=10
+# Event for CAS login processing
+event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
 {
     # Return if no URI is detected
     if(!c$http?$uri)
@@ -331,120 +211,112 @@ event http_message_done(c: connection, is_orig: bool, stat: http_message_stat) &
     if(cas_login_uri !in c$http$uri)
         return;
 
-    # print(hlist);
-    local lp_attrs: table[string] of string;
-    local session: SessionContext;
-    local user_id: string;
     local service: set[string];
 
-    if(c$http?$post_body && !is_orig)
+    if(c$http?$cas_session)
     {
-        # CAS initial POST transaction setup
-        if(/username/ in c$http$post_body)
+        if(c$http$cas_session$username == "") {
+            Reporter::warning(fmt("User ID was blank from %s. Incomplete CAS session.", c$id$orig_h));
+            return;
+        }
+
+        # Grab the CAS service parameter
+        # /cas/login?service=http://somesite.byu.edu
+        service = find_all_urls(c$http$uri);
+        for(uri in service)
         {
-            # Since we see username, this is a new post
-            lp_attrs = parse_post_body(c$http$post_body);
-            if("username" !in lp_attrs || lp_attrs["username"] == "") {
-                Reporter::warning(fmt("User ID was missing in headers from %s. Incomplete CAS session.", c$id$orig_h));
+            c$http$cas_session$service = uri;
+        }
+        
+        if(c$http$cas_session$password == "")
+        {
+            # Return since login checks won't work if password is missing
+            # TODO: Record cas log anyway for this event
+            Reporter::warning(fmt("User ID %s had blank password. Incomplete CAS session.", c$http$cas_session$username));
+            return;
+        }
+
+        # session$password = c$http$cas_password;
+        c$http$cas_session$lv_dist = levenshtein_distance(c$http$cas_session$username, c$http$cas_session$password);
+
+        check_cas_logon(c);
+
+        # Since we know we're dealing with CAS payload at this point, redact the POST payload for data sensitivity
+        c$http$post_body = "<redacted>";
+    }
+}
+
+# Event for DUO login processing
+event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
+{
+    # Return if no URI is detected
+    if(!c$http?$uri)
+        return;
+
+    # Return if we don't see a CAS URI signature
+    if(cas_login_uri !in c$http$uri)
+        return;
+
+    local service: set[string];
+
+    if(c$http?$duo_session)
+    {
+            if(c$http$duo_session$username == "") {
+                Reporter::warning(fmt("User ID was blank from %s. Incomplete DUO session.", c$id$orig_h));
                 return;
             }
-            user_id = fmt("%s-%s", c$id$orig_h, lp_attrs["username"]);
-            # print fmt("CAS USER: %s", user_id);
-            
-            # Grab the CAS service parameter
-            # /cas/login?service=http://somesite.byu.edu
+
             service = find_all_urls(c$http$uri);
             for(uri in service)
             {
-                session$service = uri;
+                c$http$duo_session$service = uri;
             }
-            
-            session$conn = c$uid;
-            session$id = c$id;
+
+            check_duo_logon(c);
+
+            # Since we know we're dealing with CAS payload at this point, redact the POST payload for data sensitivity
+            c$http$post_body = "<redacted>";
+    }
+}
+
+event cas_post_bodies(f: fa_file, data: string)
+{
+    local lp_attrs: table[string] of string;
+    local session: CAS::Info;
+    for (cid in f$conns)
+    {
+        local c: connection = f$conns[cid];
+        if(/signedDuoResponse=AUTH/ in data)
+        {
+            lp_attrs = duo_parse_post_body(data);
             session$username = lp_attrs["username"];
+            c$http$duo_session = session;
+        }
 
-            if("password" !in lp_attrs)
-            {
-                # Return since login checks won't work if password is missing
-                # TODO: Record cas log anyway for this event
-                Reporter::warning(fmt("User ID %s was missing password in headers. Incomplete CAS session.", session$username));
-                return;
-            }
-
+        if(/username/ in data)
+        {
+            lp_attrs = cas_parse_post_body(data);
+            session$username = lp_attrs["username"];
             session$password = lp_attrs["password"];
-            session$lv_dist = levenshtein_distance(lp_attrs["username"], lp_attrs["password"]);
-
-            if(c$http?$set_cookie_vars)
-            {
-                session$set_cookie = join_string_vec(c$http$set_cookie_vars, "-");
-            }
-            else
-            {
-                session$set_cookie = "";
-            }
-
-            # Set user agent if available
-            session$user_agent = c$http?$user_agent ? c$http$user_agent : "<unknown>";
-
-            #users[user_id] = table(
-            #    ["cas"] = session
-            #);
-            #check_logon_complete(c, user_id);
-            check_cas_logon(c, session);
-
-            # Since we know we're dealing with CAS payload at this point, redact the POST payload for data sensitivity
-            c$http$post_body = "<redacted>";
+            c$http$cas_session = session;
         }
     }
 }
 
-# Duo login processing
-event http_message_done(c: connection, is_orig: bool, stat: http_message_stat) &priority=-10
+event file_over_new_connection(f: fa_file, c: connection, is_orig: bool) &priority=10
 {
-    # Return if no URI is detected
-    if(!c$http?$uri)
-        return;
-
-    # Return if we don't see a CAS URI signature
-    if(cas_login_uri !in c$http$uri)
-        return;
-
-    # print(hlist);
-    local lp_attrs: table[string] of string;
-    local session: SessionContext;
-    local user_id: string;
-    local service: set[string];
-
-    if(c$http?$post_body && !is_orig) 
-    {
-        if(/signedDuoResponse/ in c$http$post_body)
-        {
-            lp_attrs = duo_parse_post_body(c$http$post_body);
-            user_id = fmt("%s-%s", c$id$orig_h, lp_attrs["username"]);
-            # print fmt("DUO USER: %s", user_id);
-            session$conn = c$uid;
-            session$id = c$id;
-            session$username = lp_attrs["username"];
-            if(c$http?$set_cookie_vars)
-            {
-                session$set_cookie = join_string_vec(c$http$set_cookie_vars, "-");
-            }
-            else
-            {
-                session$set_cookie = "";
-            }
-            # Set user agent if available
-            session$user_agent = c$http?$user_agent ? c$http$user_agent : "<unknown>";
-            service = find_all_urls(c$http$uri);
-            for(uri in service)
-            {
-                session$service = uri;
-            }
-
-            check_duo_logon(c, session);
-
-            # Since we know we're dealing with CAS payload at this point, redact the POST payload for data sensitivity
-            c$http$post_body = "<redacted>";
-        }
-    }
+	if ( is_orig && c?$http && c$http?$method && c$http$method == "POST" 
+        && c$http?$uri && cas_login_uri in c$http$uri)
+	{
+		Files::add_analyzer(f, Files::ANALYZER_DATA_EVENT, [$stream_event=cas_post_bodies]);
+	}
 }
+
+event bro_init()
+{
+    # Create the new CAS event logging stream (cas.log)
+    local stream = [$columns=Info, $path="cas"];
+    Log::create_stream(CAS::LOG, stream);
+}
+
+
