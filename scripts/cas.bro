@@ -229,7 +229,7 @@ event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
 
     if(c$http?$cas_session)
     {
-        if(c$http$cas_session$username == "") {
+        if(!c$http$cas_session?$username || c$http$cas_session$username == "") {
             Reporter::warning(fmt("User ID was blank from %s. Incomplete CAS session.", c$id$orig_h));
             return;
         }
@@ -242,7 +242,7 @@ event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
             c$http$cas_session$service = uri;
         }
         
-        if(c$http$cas_session$password == "")
+        if(!c$http$cas_session?$password || c$http$cas_session$password == "")
         {
             # Return since login checks won't work if password is missing
             # TODO: Record cas log anyway for this event
@@ -275,7 +275,7 @@ event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
 
     if(c$http?$duo_session)
     {
-            if(c$http$duo_session$username == "") {
+            if(!c$http$duo_session?$username || c$http$duo_session$username == "") {
                 Reporter::warning(fmt("User ID was blank from %s. Incomplete DUO session.", c$id$orig_h));
                 return;
             }
@@ -303,15 +303,30 @@ event cas_post_bodies(f: fa_file, data: string)
         if(/signedDuoResponse=AUTH/ in data)
         {
             lp_attrs = duo_parse_post_body(data);
+            if("username" !in lp_attrs || lp_attrs["username"] == "") {
+                Reporter::warning(fmt("User ID was blank from %s. Incomplete DUO session.", c$id$orig_h));
+                return;
+            }
             session$username = lp_attrs["username"];
+
             c$http$duo_session = session;
         }
 
         if(/username/ in data)
         {
             lp_attrs = cas_parse_post_body(data);
-            session$username = lp_attrs["username"];
+            if("username" !in lp_attrs || lp_attrs["username"] == "") {
+                Reporter::warning(fmt("User ID was blank from %s. Incomplete CAS session.", c$id$orig_h));
+                return;
+            }
+            session$username = lp_attrs["username"]; 
+
+            if("password" !in lp_attrs || lp_attrs["password"] == "") {
+                Reporter::warning(fmt("User ID %s from %s was missing password in headers. Incomplete CAS session.", c$id$orig_h, session$username));
+                return;
+            }
             session$password = lp_attrs["password"];
+
             c$http$cas_session = session;
         }
     }
