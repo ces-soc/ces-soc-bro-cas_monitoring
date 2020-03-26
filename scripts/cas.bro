@@ -23,6 +23,8 @@ export {
         password: string &optional;
         ## CAS service
         service: string &log &optional;
+        ## CAS service referrer
+        referrer: string &log &optional;
         ## CAS authentication status
         cas_success: bool &log &optional;
         ## Duo auth
@@ -125,6 +127,7 @@ function check_cas_logon(c: connection)
     log$username = c$http$cas_session$username;
     log$pw_length = |c$http$cas_session$password|;
     log$service = c$http$cas_session?$service ? c$http$cas_session$service : "<unknown>";
+    log$referrer = c$http?$referrer ? c$http$referrer : "<unknown>";
     log$lv_dist = c$http$cas_session$lv_dist;
     log$user_agent = c$http?$user_agent ? c$http$user_agent : "<unknown>";
 
@@ -151,7 +154,17 @@ function check_cas_logon(c: connection)
         {
             # CAS login successful
             log$cas_success = T;
-            log$duo_enabled = T;
+            # Lack of a service field usually means the user logged into CAS directly (no redirect from site)
+            if(c$http$cas_session?$service)
+            {
+                # If we get a 200 with the servicve field set, we are likely waiting for Duo auth
+                log$duo_enabled = T;
+            }
+            else
+            {
+                # If the service field is not set and we get a 200, the user likely logged into CAS directly
+                log$duo_enabled = F; 
+            }
             Log::write(CAS::LOG, log);
             return;
         }
@@ -170,6 +183,7 @@ function check_duo_logon(c: connection)
     # Set common fields
     log$username = c$http$duo_session$username;
     log$service = c$http$duo_session?$service ? c$http$duo_session$service : "<unknown>";
+    log$referrer = c$http?$referrer ? c$http$referrer : "<unknown>";
     log$user_agent = c$http?$user_agent ? c$http$user_agent : "<unknown>";
 
     if(c$http?$status_code)
