@@ -51,12 +51,12 @@ export {
     const cas_login_uri = /\/cas\/login/i &redef;
 }
 
-# Parse the Duo post body payload
 function duo_parse_post_body(post_body: string) : table[string] of string
 {
     local params: string_vec;
     local attrs: table[string] of string;
     local username: string;
+    attrs["username"] = "";
 
     # First, split the general POST parameters
     params = split_string(post_body, /\&/);
@@ -69,15 +69,25 @@ function duo_parse_post_body(post_body: string) : table[string] of string
         # Grab the Duo response payload
         if(tmp[0] == "signedDuoResponse")
         {
-            # Assign username and password values to attribute table
-            # Split the string on "|" (html encoded)
-            username = split_string(tmp[1], /\%7[cC]/)[1];
-            # Convert any encoded '=' on base64 string
-            if(/\%3[dD]/ in username)
+            if(1 in tmp) # Does the Duo response payload exist?
             {
-                username = gsub(username, /\%3[dD]/, "=");
+                # Assign username and password values to attribute table
+                # Below is an example of the Duo payload we process
+                # Example: AUTH|<base64 string containing username>|<other base64 metadata>
+                # Split the string on "|" (html encoded)
+                local usertmp: string_vec = split_string(tmp[1], /\%7[cC]/);
+                if(1 in usertmp) # Does the user exist?
+                {
+                    username = usertmp[1];
+                    # Convert any encoded '=' on base64 string
+                    if(/\%3[dD]/ in username)
+                    {
+                        username = gsub(username, /\%3[dD]/, "=");
+                    }
+                    # Decoded example: nturley|DIVYTHFJ1XXXXXXXXX|1566430000
+                    attrs["username"] = split_string(decode_base64(username), /\|/)[0];
+                }
             }
-            attrs["username"] = split_string(decode_base64(username), /\|/)[0];
         }
     }
     return attrs;
