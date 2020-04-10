@@ -21,18 +21,18 @@ export {
         username:  string  &log &optional;
         ## CAS password detected
         password: string &optional;
-        ## CAS service
-        service: string &log &optional;
+        ## CAS service (removed in favor of HTTP referrer)
+        # service: string &log &optional;
         ## CAS service referrer
         referrer: string &log &optional;
         ## CAS authentication status
         cas_success: bool &log &optional;
-        ## Duo auth
-        duo_enabled: bool &log &optional;
         ## Duo success
         duo_success: bool &log &optional;
         ## Duo timeout
         duo_timeout: bool &log &optional;
+        ## Duo detected
+        duo_detected: bool &log &optional;
         ## CAS missing
         cas_assume: bool &log &optional;
         ## Levenshtein Distance
@@ -136,10 +136,11 @@ function check_cas_logon(c: connection)
     # IMPORTANT: note that the password field is not being recorded in the log (make sure it stays that way)
     log$username = c$http$cas_session$username;
     log$pw_length = |c$http$cas_session$password|;
-    log$service = c$http$cas_session?$service ? c$http$cas_session$service : "<unknown>";
+    # log$service = c$http$cas_session?$service ? c$http$cas_session$service : "<unknown>";
     log$referrer = c$http?$referrer ? c$http$referrer : "<unknown>";
     log$lv_dist = c$http$cas_session$lv_dist;
     log$user_agent = c$http?$user_agent ? c$http$user_agent : "<unknown>";
+    log$duo_detected = c$http$cas_session?$duo_detected ? c$http$cas_session$duo_detected : F;
 
     if(c$http?$status_code)
     {
@@ -147,37 +148,23 @@ function check_cas_logon(c: connection)
         {
             # CAS login failed
             log$cas_success = F;
-            Log::write(CAS::LOG, log);
-            return;
         }
-
-        if(c$http?$set_cookie_vars && check_set_cookie(c$http$set_cookie_vars, "TGC") && c$http$status_code == 302) 
+        else if(c$http?$set_cookie_vars && check_set_cookie(c$http$set_cookie_vars, "TGC") && c$http$status_code == 302) 
         {
-            # CAS login successful
+            # CAS login successful, no Duo
             log$cas_success = T;
-            log$duo_enabled = F;
-            Log::write(CAS::LOG, log);
-            return;
         }
-
-        if(c$http$status_code == 200) 
+        else if(c$http$status_code == 200) 
         {
-            # CAS login successful
-            log$cas_success = T;
-            # Lack of a service field usually means the user logged into CAS directly (no redirect from site)
-            if(c$http$cas_session?$service)
-            {
-                # If we get a 200 with the servicve field set, we are likely waiting for Duo auth
-                log$duo_enabled = T;
-            }
-            else
-            {
-                # If the service field is not set and we get a 200, the user likely logged into CAS directly
-                log$duo_enabled = F; 
-            }
-            Log::write(CAS::LOG, log);
-            return;
+            log$cas_success = T; # Either direct CAS login without Duo, or Duo enabled, waiting for login. Check duo_detected field. 
         }
+        else
+        {
+            log$cas_success = F; # Can't determine CAS login. Report warning. 
+            Reporter::warning(fmt("Could not determine CAS login status from %s (%s) - HTTP CODE: %d.", c$id$orig_h, c$http$cas_session$username, c$http$status_code));
+        }
+        
+        Log::write(CAS::LOG, log);
     }
 }
 
@@ -192,7 +179,7 @@ function check_duo_logon(c: connection)
 
     # Set common fields
     log$username = c$http$duo_session$username;
-    log$service = c$http$duo_session?$service ? c$http$duo_session$service : "<unknown>";
+    # log$service = c$http$duo_session?$service ? c$http$duo_session$service : "<unknown>";
     log$referrer = c$http?$referrer ? c$http$referrer : "<unknown>";
     log$user_agent = c$http?$user_agent ? c$http$user_agent : "<unknown>";
 
@@ -224,6 +211,25 @@ function check_duo_logon(c: connection)
     }
 }
 
+event http_entity_data(c: connection, is_orig: bool, length: count, data: string)
+{
+    # Return if no URI is detected
+    if(!c$http?$uri)
+        return;
+
+    # Return if we don't see a CAS URI signature
+    if(cas_login_uri !in c$http$uri)
+        return;
+
+    if(is_orig == T)
+        return;
+
+    if(/signedDuoResponse/i in data && c$http?$cas_session)
+    {
+        c$http$cas_session$duo_detected = T;
+    }
+}
+
 # Event for CAS login processing
 event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
 {
@@ -246,11 +252,19 @@ event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
 
         # Grab the CAS service parameter
         # /cas/login?service=http://somesite.byu.edu
-        service = find_all_urls(c$http$uri);
-        for(uri in service)
-        {
-            c$http$cas_session$service = uri;
-        }
+        # service = find_all_urls(c$http$uri);
+        # if(|service| != 0) # /cas/login?service=www.byu.edu
+        # {
+        #     for(uri in service)
+        #     {
+        #         c$http$cas_session$service = uri;
+        #     }
+        # }
+        # else
+        # {
+        #     # Some CAS configurations do not include the service URI parameter. If this is the case, pull from HTTP referrer. 
+        #     c$http$cas_session$service = c$http?$referrer ? c$http$referrer : "<unknown>";
+        # }
         
         if(!c$http$cas_session?$password || c$http$cas_session$password == "")
         {
@@ -285,21 +299,28 @@ event http_message_done(c: connection, is_orig: bool, stat: http_message_stat)
 
     if(c$http?$duo_session)
     {
-            if(!c$http$duo_session?$username || c$http$duo_session$username == "") {
-                Reporter::warning(fmt("User ID was blank from %s. Incomplete DUO session.", c$id$orig_h));
-                return;
-            }
+        if(!c$http$duo_session?$username || c$http$duo_session$username == "") {
+            Reporter::warning(fmt("User ID was blank from %s. Incomplete DUO session.", c$id$orig_h));
+            return;
+        }
 
-            service = find_all_urls(c$http$uri);
-            for(uri in service)
-            {
-                c$http$duo_session$service = uri;
-            }
+        # service = find_all_urls(c$http$uri);
+        # if(|service| != 0)
+        # {
+        #     for(uri in service)
+        #     {
+        #         c$http$duo_session$service = uri;
+        #     }
+        # }
+        # else
+        # {
+        #     c$http$duo_session$service = c$http?$referrer ? c$http$referrer : "<unknown>";
+        # }
 
-            check_duo_logon(c);
+        check_duo_logon(c);
 
-            # Since we know we're dealing with CAS payload at this point, redact the POST payload for data sensitivity
-            c$http$post_body = "<redacted>";
+        # Since we know we're dealing with CAS payload at this point, redact the POST payload for data sensitivity
+        c$http$post_body = "<redacted>";
     }
 }
 
