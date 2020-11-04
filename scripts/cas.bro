@@ -75,14 +75,14 @@ function duo_parse_post_body(post_body: string) : table[string] of string
                 # Below is an example of the Duo payload we process
                 # Example: AUTH|<base64 string containing username>|<other base64 metadata>
                 # Split the string on "|" (html encoded)
-                local usertmp: string_vec = split_string(tmp[1], /\%7[cC]/);
+                local usertmp: string_vec = split_string(tmp[1], /\%7c/i);
                 if(1 in usertmp) # Does the user exist?
                 {
                     username = usertmp[1];
                     # Convert any encoded '=' on base64 string
-                    if(/\%3[dD]/ in username)
+                    if(/\%3d/i in username)
                     {
-                        username = gsub(username, /\%3[dD]/, "=");
+                        username = gsub(username, /\%3d/i, "=");
                     }
                     # Decoded example: nturley|DIVYTHFJ1XXXXXXXXX|1566430000
                     attrs["username"] = split_string(decode_base64(username), /\|/)[0];
