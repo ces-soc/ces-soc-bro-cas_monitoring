@@ -372,7 +372,7 @@ event file_over_new_connection(f: fa_file, c: connection, is_orig: bool) &priori
 	}
 }
 
-event bro_init()
+event zeek_init()
 {
     # Create the new CAS event logging stream (cas.log)
     local stream = [$columns=Info, $path="cas"];
