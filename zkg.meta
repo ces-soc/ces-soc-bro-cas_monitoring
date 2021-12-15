@@ -2,8 +2,8 @@
 description = Provides monitoring for CAS services and sensitive data redaction
 tags = cas, http, post
 script_dir = scripts
-version = 4.2.0
+version = 4.2.6
 depends =
   bro >=2.5.0
-  https://github.com/byu-oit/ces-soc-bro-http_post_bodies >=3.0.0
+  https://github.com/nturley3/zeek-http-post-bodies >=3.0.0
   https://github.com/nturley3/zeek-core-configs >=1.4.0
